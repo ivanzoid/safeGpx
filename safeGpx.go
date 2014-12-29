@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/kellydunn/golang-geo"
 	"encoding/xml"
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -38,30 +37,44 @@ func (p *Points) Set(value string) error {
 	return nil
 }
 
+func polygonDesc(polygon geo.Polygon) string {
+	points := polygon.Points()
+	descriptions := make([]string, 0)
+	for _, point := range points {
+		description := fmt.Sprint(*point)
+		descriptions = append(descriptions, description)
+	}
+	result := fmt.Sprintf("[%v]", strings.Join(descriptions, " "))
+	return result
+}
+
 type XmlProcessor struct {
-	reader io.Reader
-	writer io.Writer
-	insideTrackPointToSkip bool
+	xmlDecoder *xml.Decoder
+	xmlEncoder *xml.Encoder
+	Polygon geo.Polygon
 }
 
 func (self *XmlProcessor) Process(inputFileName, outputFileName string) (err error) {
-
-	type TrackPoint struct {
-		Lat float64 `xml:"lat,attr"`
-		Lon float64 `xml:"lon,attr"`
-	}
 
 	inputFile, err := os.Open(inputFileName)
 	if err != nil {
 		return
 	}
-
 	defer inputFile.Close()
 
-	xmlDecoder := xml.NewDecoder(inputFile)
+	self.xmlDecoder = xml.NewDecoder(inputFile)
+
+	outputFile, err := os.Create(outputFileName)
+	if err != nil {
+		return
+	}
+	defer outputFile.Close()
+
+	self.xmlEncoder = xml.NewEncoder(outputFile)
+	self.xmlEncoder.Indent("", "  ")
 
 	for {
-		token, err := xmlDecoder.Token()
+		token, err := self.xmlDecoder.Token()
 		if token == nil {
 			break
 		}
@@ -71,42 +84,48 @@ func (self *XmlProcessor) Process(inputFileName, outputFileName string) (err err
 
 		fmt.Printf("token: %v\n", token)
 
-		switch t := token.(type) {
-			case xml.StartElement:
-				if t.Name.Local == "trkpt" {
-					var trackPoint TrackPoint
-					err = xmlDecoder.DecodeElement(&trackPoint, &t)
-					if err != nil {
-						fmt.Printf("Warning: can't decode track point at position %v\n", xmlDecoder.InputOffset())
-						continue
-					}
-				} else {
-
-				}
-			case xml.EndElement:
-				if t.Name.Local == "trkpt" {
-					self.insideTrackPointToSkip = false
-				}
+		err = self.handleToken(token)
+		if err != nil {
+			return err
 		}
 	}
 
-	// outputFile, err := os.Create(outputFileName)
-	// if err != nil {
-	// 	panic(err)
-	// }
-
-	// defer func() {
-	// 	err = outputFile.Close()
-	// }()
-
-	// // outputFileWriter := bufio.NewWriter(outputFile)
-
-	// err = mxj.HandleXmlReader(inputFileReader, self.filterHandler, self.errHandler)
-	// if err != nil {
-	// 	return
-	// }
+	self.xmlEncoder.Flush()
 
 	return
+}
+
+func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
+
+	type TrackPoint struct {
+		Lat float64 `xml:"lat,attr"`
+		Lon float64 `xml:"lon,attr"`
+	}
+
+	switch t := token.(type) {
+
+	case xml.StartElement:
+		if t.Name.Local == "trkpt" {
+
+			// var trackPoint TrackPoint
+			// err = self.xmlDecoder.DecodeElement(&trackPoint, &t)
+			// if err != nil {
+			// 	fmt.Printf("Warning: can't decode track point at position %v\n", self.xmlDecoder.InputOffset())
+			// 	return nil
+			// }
+
+			// point := geo.NewPoint(trackPoint.Lat, trackPoint.Lon)
+
+			// if self.Polygon.Contains(point) {
+			// 	fmt.Printf("Skipping point: %v\n", trackPoint)
+			// 	return
+			// }
+		}
+	}
+
+	self.xmlEncoder.EncodeToken(token)
+
+	return nil
 }
 
 func appName() string {
@@ -148,6 +167,13 @@ func main() {
 		return
 	}
 
+	if len(skipArea) < 1 {
+		fmt.Printf("Please specify skipArea.\n")
+		return
+	}
+
+	fmt.Printf("skipArea: %v\n", skipArea)
+
 	fileName := flag.Args()[0]
 	outputFileName := ""
 
@@ -164,9 +190,29 @@ func main() {
 
 	fmt.Printf("%v -> %v\n", fileName, outputFileName)
 
-	x := &XmlProcessor{}
-	err := x.Process(fileName, outputFileName)
+	var polygon geo.Polygon
+
+	if len(skipArea) == 2 {
+		topLeft := skipArea[0]
+		bottomRight := skipArea[1]
+		topRight := geo.NewPoint((&topLeft).Lat(), (&bottomRight).Lng())
+		bottomLeft := geo.NewPoint((&bottomRight).Lat(), (&topLeft).Lng())
+		polygon.Add(&topLeft)
+		polygon.Add(topRight)
+		polygon.Add(&bottomRight)
+		polygon.Add(bottomLeft)
+	} else {
+		for _, point := range skipArea {
+			polygon.Add(&point)
+		}
+	}
+
+	fmt.Printf("polygon: %v\n", polygonDesc(polygon))
+
+	xp := &XmlProcessor{}
+	xp.Polygon = polygon
+	err := xp.Process(fileName, outputFileName)
 	if err != nil {
-		panic(err)
+		fmt.Println(err)
 	}
 }
