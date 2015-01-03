@@ -1,14 +1,16 @@
 package main
 
 import (
+	"encoding/xml"
+	"errors"
 	"flag"
 	"fmt"
 	"github.com/kellydunn/golang-geo"
-	"encoding/xml"
+	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"strconv"
+	"strings"
 )
 
 type Points []geo.Point
@@ -20,7 +22,7 @@ func (p *Points) String() string {
 func (p *Points) Set(value string) error {
 	values := strings.Split(value, ",")
 	for i := 0; i < len(values); i += 2 {
-		if i + 1 >= len(values) {
+		if i+1 >= len(values) {
 			break
 		}
 		lat, err := strconv.ParseFloat(values[i], 10)
@@ -49,9 +51,11 @@ func polygonDesc(polygon geo.Polygon) string {
 }
 
 type XmlProcessor struct {
-	xmlDecoder *xml.Decoder
-	xmlEncoder *xml.Encoder
-	Polygon geo.Polygon
+	xmlDecoder    *xml.Decoder
+	xmlEncoder    *xml.Encoder
+	inPointToSkip bool
+	Polygon       geo.Polygon
+	xmlns         string
 }
 
 func (self *XmlProcessor) Process(inputFileName, outputFileName string) (err error) {
@@ -97,33 +101,85 @@ func (self *XmlProcessor) Process(inputFileName, outputFileName string) (err err
 
 func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
 
-	type TrackPoint struct {
-		Lat float64 `xml:"lat,attr"`
-		Lon float64 `xml:"lon,attr"`
-	}
+	skipToken := self.inPointToSkip
 
 	switch t := token.(type) {
 
 	case xml.StartElement:
-		if t.Name.Local == "trkpt" {
 
-			// var trackPoint TrackPoint
-			// err = self.xmlDecoder.DecodeElement(&trackPoint, &t)
-			// if err != nil {
-			// 	fmt.Printf("Warning: can't decode track point at position %v\n", self.xmlDecoder.InputOffset())
-			// 	return nil
-			// }
+		if t.Name.Local == "gpx" {
 
-			// point := geo.NewPoint(trackPoint.Lat, trackPoint.Lon)
+			for _, attribute := range t.Attr {
+				if attribute.Name.Local == "xmlns" {
+					self.xmlns = attribute.Value
+				}
+			}
 
-			// if self.Polygon.Contains(point) {
-			// 	fmt.Printf("Skipping point: %v\n", trackPoint)
-			// 	return
-			// }
+		} else if t.Name.Local == "trkpt" {
+
+			if self.inPointToSkip {
+				return errors.New(fmt.Sprintf("trkpt inside trkpt at at position %v", self.xmlDecoder.InputOffset()))
+			}
+
+			lat := math.MaxFloat64
+			lon := math.MaxFloat64
+
+			for _, attribute := range t.Attr {
+				if attribute.Name.Local == "lat" {
+					localLat, err := strconv.ParseFloat(attribute.Value, 10)
+					if err != nil {
+						fmt.Printf("Warning: can't decode latitude of track point at position %v\n", self.xmlDecoder.InputOffset())
+					} else {
+						lat = localLat
+					}
+				} else if attribute.Name.Local == "lon" {
+					localLon, err := strconv.ParseFloat(attribute.Value, 10)
+					if err != nil {
+						fmt.Printf("Warning: can't decode longitude of track point at position %v\n", self.xmlDecoder.InputOffset())
+					} else {
+						lon = localLon
+					}
+				}
+			}
+
+			if lat == math.MaxFloat64 || lon == math.MaxFloat64 {
+				return nil
+			}
+
+			point := geo.NewPoint(lat, lon)
+
+			if self.Polygon.Contains(point) {
+				fmt.Printf("Skipping point: %v\n", point)
+				self.inPointToSkip = true
+				skipToken = true
+			}
 		}
+
+	case xml.EndElement:
+
+		if t.Name.Local == "trkpt" {
+			if self.inPointToSkip {
+				self.inPointToSkip = false
+				skipToken = true
+			}
+		}
+
+	case xml.CharData:
+
+		str := string(t)
+		newStr := strings.Replace(str, "\x0a", "", -1)
+		if len(newStr) != len(str) {
+			token = []byte(newStr)
+		}
+
 	}
 
-	self.xmlEncoder.EncodeToken(token)
+	if !skipToken {
+		fmt.Printf("Writing token\n")
+		self.xmlEncoder.EncodeToken(token)
+	} else {
+		fmt.Printf("Skipping token\n")
+	}
 
 	return nil
 }
