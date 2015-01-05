@@ -1,11 +1,14 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/xml"
 	"errors"
 	"flag"
 	"fmt"
 	"github.com/kellydunn/golang-geo"
+	"io"
 	"math"
 	"os"
 	"path/filepath"
@@ -13,31 +16,9 @@ import (
 	"strings"
 )
 
-type Points []geo.Point
-
-func (p *Points) String() string {
-	return fmt.Sprint(*p)
-}
-
-func (p *Points) Set(value string) error {
-	values := strings.Split(value, ",")
-	for i := 0; i < len(values); i += 2 {
-		if i+1 >= len(values) {
-			break
-		}
-		lat, err := strconv.ParseFloat(values[i], 10)
-		if err != nil {
-			return err
-		}
-		lon, err := strconv.ParseFloat(values[i+1], 10)
-		if err != nil {
-			return err
-		}
-		point := geo.NewPoint(lat, lon)
-		*p = append(*p, *point)
-	}
-	return nil
-}
+//
+// Misc
+//
 
 func polygonDesc(polygon geo.Polygon) string {
 	points := polygon.Points()
@@ -50,6 +31,10 @@ func polygonDesc(polygon geo.Polygon) string {
 	return result
 }
 
+//
+// XmlProcessor
+//
+
 type XmlProcessor struct {
 	xmlDecoder    *xml.Decoder
 	xmlEncoder    *xml.Encoder
@@ -58,23 +43,11 @@ type XmlProcessor struct {
 	xmlns         string
 }
 
-func (self *XmlProcessor) Process(inputFileName, outputFileName string) (err error) {
+func (self *XmlProcessor) Process(inputReader io.Reader, outputWriter io.Writer) (err error) {
 
-	inputFile, err := os.Open(inputFileName)
-	if err != nil {
-		return
-	}
-	defer inputFile.Close()
+	self.xmlDecoder = xml.NewDecoder(inputReader)
 
-	self.xmlDecoder = xml.NewDecoder(inputFile)
-
-	outputFile, err := os.Create(outputFileName)
-	if err != nil {
-		return
-	}
-	defer outputFile.Close()
-
-	self.xmlEncoder = xml.NewEncoder(outputFile)
+	self.xmlEncoder = xml.NewEncoder(outputWriter)
 	self.xmlEncoder.Indent("", "  ")
 
 	for {
@@ -184,6 +157,40 @@ func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
 	return nil
 }
 
+//
+// Points
+//
+
+type Points []geo.Point
+
+func (p *Points) String() string {
+	return fmt.Sprint(*p)
+}
+
+func (p *Points) Set(value string) error {
+	values := strings.Split(value, ",")
+	for i := 0; i < len(values); i += 2 {
+		if i+1 >= len(values) {
+			break
+		}
+		lat, err := strconv.ParseFloat(values[i], 10)
+		if err != nil {
+			return err
+		}
+		lon, err := strconv.ParseFloat(values[i+1], 10)
+		if err != nil {
+			return err
+		}
+		point := geo.NewPoint(lat, lon)
+		*p = append(*p, *point)
+	}
+	return nil
+}
+
+//
+// Main
+//
+
 func appName() string {
 	return filepath.Base(os.Args[0])
 }
@@ -207,44 +214,19 @@ func usage() {
 	})
 }
 
-var skipArea Points
+func safeFileName(inputFileName string) string {
 
-func init() {
-	// Tie the command-line flag to the intervalFlag variable and
-	// set a usage message.
-	flag.Var(&skipArea, "skipArea", "Area (in format lat1,lon1,lat2,lon2,etc.) to exclude from resulting GPX file.\n\t\t\tYou may use only 2 points (top-left and bottom-right) to specify rectangular area.")
+	dir := filepath.Dir(inputFileName)
+	base := filepath.Base(inputFileName)
+	ext := filepath.Ext(base)
+	name := base[0 : len(base)-len(ext)]
+	outputFileName := fmt.Sprintf("%v/%v_safe%v", dir, name, ext)
+	outputFileName = filepath.Clean(outputFileName)
+
+	return outputFileName
 }
 
-func main() {
-	flag.Parse()
-
-	if flag.NArg() < 1 {
-		usage()
-		return
-	}
-
-	if len(skipArea) < 1 {
-		fmt.Printf("Please specify skipArea.\n")
-		return
-	}
-
-	fmt.Printf("skipArea: %v\n", skipArea)
-
-	fileName := flag.Args()[0]
-	outputFileName := ""
-
-	if flag.NArg() >= 2 {
-		outputFileName = flag.Args()[1]
-	} else {
-		dir := filepath.Dir(fileName)
-		base := filepath.Base(fileName)
-		ext := filepath.Ext(base)
-		name := base[0 : len(base)-len(ext)]
-		outputFileName = fmt.Sprintf("%v/%v_safe%v", dir, name, ext)
-		outputFileName = filepath.Clean(outputFileName)
-	}
-
-	fmt.Printf("%v -> %v\n", fileName, outputFileName)
+func polygonFromSkipArea(skipArea Points) geo.Polygon {
 
 	var polygon geo.Polygon
 
@@ -263,12 +245,71 @@ func main() {
 		}
 	}
 
+	return polygon
+}
+
+var GSkipArea Points
+
+func init() {
+	flag.Var(&GSkipArea, "skipArea", "Area (in format lat1,lon1,lat2,lon2,etc.) to exclude from resulting GPX file.\n\t\t\tYou may use only 2 points (top-left and bottom-right) to specify rectangular area.")
+}
+
+func main() {
+	flag.Parse()
+
+	if flag.NArg() < 1 {
+		usage()
+		return
+	}
+
+	if len(GSkipArea) < 1 {
+		fmt.Fprintf(os.Stderr, "Please specify skipArea.\n")
+		return
+	}
+
+	inputFileName := flag.Args()[0]
+	outputFileName := ""
+
+	if flag.NArg() >= 2 {
+		outputFileName = flag.Args()[1]
+	} else {
+		outputFileName = safeFileName(inputFileName)
+	}
+
+	polygon := polygonFromSkipArea(GSkipArea)
+
 	fmt.Printf("polygon: %v\n", polygonDesc(polygon))
+
+	inputFile, err := os.Open(inputFileName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	defer inputFile.Close()
+
+	outputBuffer := new(bytes.Buffer)
+	outputWriter := bufio.NewWriter(outputBuffer)
 
 	xp := &XmlProcessor{}
 	xp.Polygon = polygon
-	err := xp.Process(fileName, outputFileName)
+	err = xp.Process(inputFile, outputWriter)
 	if err != nil {
-		fmt.Println(err)
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+
+	outputWriter.Flush()
+
+	outputFile, err := os.Create(outputFileName)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	defer outputFile.Close()
+
+	_, err = outputFile.WriteString(outputBuffer.String())
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
 }
