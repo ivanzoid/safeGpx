@@ -306,7 +306,9 @@ func main() {
 
 	polygon := polygonFromSkipArea(GSkipArea)
 
-	// fmt.Printf("polygon: %v\n", polygonDesc(polygon))
+	if GVerbose {
+		fmt.Printf("Polygon is: %v\n", polygonDesc(polygon))
+	}
 
 	inputFile, err := os.Open(inputFileName)
 	if err != nil {
