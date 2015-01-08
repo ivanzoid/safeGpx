@@ -1,7 +1,8 @@
+# safeGpx
+
 `safeGpx` is a tool for filtering out unwanted regions from GPX files.
 
-
-Example usage:
+#### Example usage:
 
 <pre>$ safeGpx -skipArea 29.212000,53.136975,29.214000,53.136725 sourceGpxFile.gpx -o outputGpxFile.gpx</pre>
 
