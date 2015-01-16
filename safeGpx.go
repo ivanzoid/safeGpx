@@ -65,7 +65,7 @@ func (self *XmlProcessor) Process(inputReader io.Reader, outputWriter io.Writer)
 			return err
 		}
 
-		// fmt.Printf("token: %v\n", token)
+		// fmt.Fprintf(os.Stderr, "token: %v\n", token)
 
 		err = self.handleToken(token)
 		if err != nil {
@@ -115,14 +115,14 @@ func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
 				if attribute.Name.Local == "lat" {
 					localLat, err := strconv.ParseFloat(attribute.Value, 10)
 					if err != nil {
-						fmt.Printf("Warning: can't decode latitude of track point at position %v\n", self.xmlDecoder.InputOffset())
+						fmt.Fprintf(os.Stderr, "Warning: can't decode latitude of track point at position %v\n", self.xmlDecoder.InputOffset())
 					} else {
 						lat = localLat
 					}
 				} else if attribute.Name.Local == "lon" {
 					localLon, err := strconv.ParseFloat(attribute.Value, 10)
 					if err != nil {
-						fmt.Printf("Warning: can't decode longitude of track point at position %v\n", self.xmlDecoder.InputOffset())
+						fmt.Fprintf(os.Stderr, "Warning: can't decode longitude of track point at position %v\n", self.xmlDecoder.InputOffset())
 					} else {
 						lon = localLon
 					}
@@ -137,7 +137,7 @@ func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
 
 			if self.Polygon.Contains(point) {
 				if self.VerbosePrinting {
-					fmt.Printf("Skipping point: (%+.6f, %+.6f)\n", point.Lat(), point.Lng())
+					fmt.Fprintf(os.Stderr, "Skipping point: (%+.6f, %+.6f)\n", point.Lat(), point.Lng())
 				}
 				self.skippedPointsCounter++
 				self.inPointToSkip = true
@@ -165,10 +165,10 @@ func (self *XmlProcessor) handleToken(token xml.Token) (err error) {
 	}
 
 	if !skipToken {
-		// fmt.Printf("Writing token\n")
+		// fmt.Fprintf(os.Stderr, "Writing token\n")
 		self.xmlEncoder.EncodeToken(token)
 	} else {
-		// fmt.Printf("Skipping token\n")
+		// fmt.Fprintf(os.Stderr, "Skipping token\n")
 	}
 
 	return nil
@@ -207,11 +207,13 @@ func (p *Points) Set(value string) error {
 var GSkipArea Points
 var GVerbose bool
 var GPrintVersion bool
+var GOutputFileName string
 
 func init() {
 	flag.Var(&GSkipArea, "skipArea", "Area (in format lat1,lon1,lat2,lon2,etc.) to exclude from resulting GPX file.\n\t\t\tYou may use only 2 points (top-left and bottom-right) to specify rectangular area.")
 	flag.BoolVar(&GVerbose, "v", false, "Use verbose output")
 	flag.BoolVar(&GPrintVersion, "version", false, "Print version and quit")
+	flag.StringVar(&GOutputFileName, "o", "", "Output file name")
 }
 
 //
@@ -228,7 +230,7 @@ func usage() {
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "Usage:\n\n")
-	fmt.Fprintf(os.Stderr, "\t%v <options> <gpxFile> [-o <outputGpxFile>]\n", appName)
+	fmt.Fprintf(os.Stderr, "\t%v <options> [-o <outputGpxFile>] <sourceGpxFile>\n", appName)
 	fmt.Fprintf(os.Stderr, "\n")
 	fmt.Fprintf(os.Stderr, "Options are:\n")
 	fmt.Fprintf(os.Stderr, "\n")
@@ -241,18 +243,6 @@ func usage() {
 		nameWithColon := fmt.Sprintf("%v:", flag.Name)
 		fmt.Fprintf(os.Stderr, "\t-%-12s\t%s%s\n", nameWithColon, flag.Usage, defaultValue)
 	})
-}
-
-func safeFileName(inputFileName string) string {
-
-	dir := filepath.Dir(inputFileName)
-	base := filepath.Base(inputFileName)
-	ext := filepath.Ext(base)
-	name := base[0 : len(base)-len(ext)]
-	outputFileName := fmt.Sprintf("%v/%v_safe%v", dir, name, ext)
-	outputFileName = filepath.Clean(outputFileName)
-
-	return outputFileName
 }
 
 func polygonFromSkipArea(skipArea Points) geo.Polygon {
@@ -296,18 +286,11 @@ func main() {
 	}
 
 	inputFileName := flag.Args()[0]
-	outputFileName := ""
-
-	if flag.NArg() >= 2 {
-		outputFileName = flag.Args()[1]
-	} else {
-		outputFileName = safeFileName(inputFileName)
-	}
 
 	polygon := polygonFromSkipArea(GSkipArea)
 
 	if GVerbose {
-		fmt.Printf("Polygon is: %v\n", polygonDesc(polygon))
+		fmt.Fprintf(os.Stderr, "Polygon is: %v\n", polygonDesc(polygon))
 	}
 
 	inputFile, err := os.Open(inputFileName)
@@ -335,7 +318,7 @@ func main() {
 		if skippedPointsCount > 1 {
 			optionalS = "s"
 		}
-		fmt.Printf("Skipped %d point%v.\n", skippedPointsCount, optionalS)
+		fmt.Fprintf(os.Stderr, "Skipped %d point%v.\n", skippedPointsCount, optionalS)
 	}
 
 	outputWriter.Flush()
@@ -347,12 +330,16 @@ func main() {
 	resultString = strings.Replace(resultString, xmlnsString, "", -1)
 	resultString = strings.Replace(resultString, "<gpx", gpxString, 1)
 
-	outputFile, err := os.Create(outputFileName)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		return
+	outputFile := os.Stdout
+
+	if len(GOutputFileName) != 0 {
+		outputFile, err = os.Create(GOutputFileName)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return
+		}
+		defer outputFile.Close()
 	}
-	defer outputFile.Close()
 
 	_, err = outputFile.WriteString(resultString)
 	if err != nil {
