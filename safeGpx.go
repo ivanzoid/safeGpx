@@ -17,7 +17,7 @@ import (
 )
 
 const (
-	kAppVersion = "1.0"
+	kAppVersion = "1.1"
 )
 
 //
