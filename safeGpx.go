@@ -4,7 +4,6 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/xml"
-	"errors"
 	"flag"
 	"fmt"
 	"github.com/kellydunn/golang-geo"
